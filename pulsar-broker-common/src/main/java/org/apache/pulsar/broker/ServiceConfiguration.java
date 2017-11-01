@@ -100,6 +100,10 @@ public class ServiceConfiguration implements PulsarConfiguration {
     // relative to a disconnected producer. Default is 6 hours.
     private int brokerDeduplicationProducerInactivityTimeoutMinutes = 360;
 
+    // When a namespace is created without specifying the number of bundle, this
+    // value will be used as the default
+    private int defaultNumberOfNamespaceBundles = 4;
+
     // Enable check for minimum allowed client library version
     private boolean clientLibraryVersionCheckEnabled = false;
     // Allow client libraries with no version information
@@ -269,14 +273,15 @@ public class ServiceConfiguration implements PulsarConfiguration {
     private int managedLedgerMaxUnackedRangesToPersist = 10000;
     // Max number of "acknowledgment holes" that can be stored in Zookeeper. If number of unack message range is higher
     // than this limit then broker will persist unacked ranges into bookkeeper to avoid additional data overhead into
-    // zookeeper.  
+    // zookeeper.
     private int managedLedgerMaxUnackedRangesToPersistInZooKeeper = 1000;
 
     /*** --- Load balancer --- ****/
     // Enable load balancer
     private boolean loadBalancerEnabled = false;
-    // load placement strategy
-    private String loadBalancerPlacementStrategy = "weightedRandomSelection"; // weighted random selection
+    // load placement strategy[weightedRandomSelection/leastLoadedServer] (only used by SimpleLoadManagerImpl)
+    @Deprecated
+    private String loadBalancerPlacementStrategy = "leastLoadedServer"; // weighted random selection
     // Percentage of change to trigger load report update
     @FieldContext(dynamic = true)
     private int loadBalancerReportUpdateThresholdPercentage = 10;
@@ -285,33 +290,42 @@ public class ServiceConfiguration implements PulsarConfiguration {
     private int loadBalancerReportUpdateMaxIntervalMinutes = 15;
     // Frequency of report to collect
     private int loadBalancerHostUsageCheckIntervalMinutes = 1;
-    // Load shedding interval. Broker periodically checks whether some traffic
-    // should be offload from
-    // some over-loaded broker to other under-loaded brokers
-    private int loadBalancerSheddingIntervalMinutes = 30;
+    // Load shedding interval. Broker periodically checks whether some traffic should be offload from some over-loaded
+    // broker to other under-loaded brokers
+    private int loadBalancerSheddingIntervalMinutes = 5;
     // Prevent the same topics to be shed and moved to other broker more that
     // once within this timeframe
     private long loadBalancerSheddingGracePeriodMinutes = 30;
-    // Usage threshold to determine a broker as under-loaded
+    // Usage threshold to determine a broker as under-loaded (only used by SimpleLoadManagerImpl)
+    @Deprecated
     private int loadBalancerBrokerUnderloadedThresholdPercentage = 50;
-    // Usage threshold to determine a broker as over-loaded
+    // Usage threshold to determine a broker as over-loaded (only used by SimpleLoadManagerImpl)
+    @Deprecated
     private int loadBalancerBrokerOverloadedThresholdPercentage = 85;
-    // interval to flush dynamic resource quota to ZooKeeper
+    // Interval to flush dynamic resource quota to ZooKeeper
     private int loadBalancerResourceQuotaUpdateIntervalMinutes = 15;
-    // Usage threshold to defermine a broker is having just right level of load
+    // Usage threshold to determine a broker is having just right level of load (only used by SimpleLoadManagerImpl)
+    @Deprecated
     private int loadBalancerBrokerComfortLoadLevelPercentage = 65;
     // enable/disable automatic namespace bundle split
-    private boolean loadBalancerAutoBundleSplitEnabled = false;
+    @FieldContext(dynamic = true)
+    private boolean loadBalancerAutoBundleSplitEnabled = true;
+    // enable/disable automatic unloading of split bundles
+    @FieldContext(dynamic = true)
+    private boolean loadBalancerAutoUnloadSplitBundlesEnabled = true;
     // maximum topics in a bundle, otherwise bundle split will be triggered
     private int loadBalancerNamespaceBundleMaxTopics = 1000;
     // maximum sessions (producers + consumers) in a bundle, otherwise bundle split will be triggered
     private int loadBalancerNamespaceBundleMaxSessions = 1000;
     // maximum msgRate (in + out) in a bundle, otherwise bundle split will be triggered
-    private int loadBalancerNamespaceBundleMaxMsgRate = 1000;
+    private int loadBalancerNamespaceBundleMaxMsgRate = 30000;
     // maximum bandwidth (in + out) in a bundle, otherwise bundle split will be triggered
     private int loadBalancerNamespaceBundleMaxBandwidthMbytes = 100;
     // maximum number of bundles in a namespace
     private int loadBalancerNamespaceMaximumBundles = 128;
+    // Name of load manager to use
+    @FieldContext(dynamic = true)
+    private String loadManagerClassName = "org.apache.pulsar.broker.loadbalance.impl.ModularLoadManagerImpl";
 
     /**** --- Replication --- ****/
     // Enable replication metrics
@@ -338,9 +352,6 @@ public class ServiceConfiguration implements PulsarConfiguration {
     private int brokerServicePurgeInactiveFrequencyInSeconds = 60;
     private List<String> bootstrapNamespaces = new ArrayList<String>();
     private Properties properties = new Properties();
-    // Name of load manager to use
-    @FieldContext(dynamic = true)
-    private String loadManagerClassName = "org.apache.pulsar.broker.loadbalance.impl.SimpleLoadManagerImpl";
     // If true, (and ModularLoadManagerImpl is being used), the load manager will attempt to
     // use only brokers running the latest software version (to minimize impact to bundles)
     @FieldContext(dynamic = true)
@@ -500,6 +511,14 @@ public class ServiceConfiguration implements PulsarConfiguration {
     public void setBrokerDeduplicationProducerInactivityTimeoutMinutes(
             int brokerDeduplicationProducerInactivityTimeoutMinutes) {
         this.brokerDeduplicationProducerInactivityTimeoutMinutes = brokerDeduplicationProducerInactivityTimeoutMinutes;
+    }
+
+    public int getDefaultNumberOfNamespaceBundles() {
+        return defaultNumberOfNamespaceBundles;
+    }
+
+    public void setDefaultNumberOfNamespaceBundles(int defaultNumberOfNamespaceBundles) {
+        this.defaultNumberOfNamespaceBundles = defaultNumberOfNamespaceBundles;
     }
 
     public long getBrokerDeleteInactiveTopicsFrequencySeconds() {
@@ -1100,12 +1119,20 @@ public class ServiceConfiguration implements PulsarConfiguration {
         this.loadBalancerBrokerComfortLoadLevelPercentage = percentage;
     }
 
-    public boolean getLoadBalancerAutoBundleSplitEnabled() {
+    public boolean isLoadBalancerAutoBundleSplitEnabled() {
         return this.loadBalancerAutoBundleSplitEnabled;
     }
 
     public void setLoadBalancerAutoBundleSplitEnabled(boolean enabled) {
         this.loadBalancerAutoBundleSplitEnabled = enabled;
+    }
+
+    public boolean isLoadBalancerAutoUnloadSplitBundlesEnabled() {
+        return loadBalancerAutoUnloadSplitBundlesEnabled;
+    }
+
+    public void setLoadBalancerAutoUnloadSplitBundlesEnabled(boolean loadBalancerAutoUnloadSplitBundlesEnabled) {
+        this.loadBalancerAutoUnloadSplitBundlesEnabled = loadBalancerAutoUnloadSplitBundlesEnabled;
     }
 
     public void setLoadBalancerNamespaceMaximumBundles(int bundles) {

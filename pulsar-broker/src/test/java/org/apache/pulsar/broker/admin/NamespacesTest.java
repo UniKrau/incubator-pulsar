@@ -847,7 +847,7 @@ public class NamespacesTest extends MockedPulsarServiceBaseTest {
         // split bundles
         try {
             namespaces.splitNamespaceBundle(testProperty, testLocalCluster, bundledNsLocal, "0x00000000_0xffffffff",
-                    false);
+                    false, true);
             // verify split bundles
             BundlesData bundlesData = namespaces.getBundlesData(testProperty, testLocalCluster, bundledNsLocal);
             assertNotNull(bundlesData);
@@ -855,6 +855,31 @@ public class NamespacesTest extends MockedPulsarServiceBaseTest {
             assertTrue(bundlesData.boundaries.get(0).equals("0x00000000"));
             assertTrue(bundlesData.boundaries.get(1).equals("0x7fffffff"));
             assertTrue(bundlesData.boundaries.get(2).equals("0xffffffff"));
+        } catch (RestException re) {
+            assertEquals(re.getResponse().getStatus(), Status.PRECONDITION_FAILED.getStatusCode());
+        }
+    }
+
+    @Test
+    public void testSplitBundleWithUnDividedRange() throws Exception {
+        URL localWebServiceUrl = new URL(pulsar.getWebServiceAddress());
+        String bundledNsLocal = "test-bundled-namespace-1";
+        BundlesData bundleData = new BundlesData(
+                Lists.newArrayList("0x00000000", "0x08375b1a", "0x08375b1b", "0xffffffff"));
+        createBundledTestNamespaces(this.testProperty, this.testLocalCluster, bundledNsLocal, bundleData);
+        final NamespaceName testNs = new NamespaceName(this.testProperty, this.testLocalCluster, bundledNsLocal);
+
+        OwnershipCache MockOwnershipCache = spy(pulsar.getNamespaceService().getOwnershipCache());
+        doNothing().when(MockOwnershipCache).disableOwnership(any(NamespaceBundle.class));
+        Field ownership = NamespaceService.class.getDeclaredField("ownershipCache");
+        ownership.setAccessible(true);
+        ownership.set(pulsar.getNamespaceService(), MockOwnershipCache);
+        mockWebUrl(localWebServiceUrl, testNs);
+
+        // split bundles
+        try {
+            namespaces.splitNamespaceBundle(testProperty, testLocalCluster, bundledNsLocal, "0x08375b1a_0x08375b1b",
+                    false, false);
         } catch (RestException re) {
             assertEquals(re.getResponse().getStatus(), Status.PRECONDITION_FAILED.getStatusCode());
         }

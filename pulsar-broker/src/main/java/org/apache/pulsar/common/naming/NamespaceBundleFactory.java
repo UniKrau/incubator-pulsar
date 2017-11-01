@@ -50,6 +50,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.common.base.Charsets;
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
+import com.google.common.collect.BoundType;
 import com.google.common.collect.Range;
 import com.google.common.hash.HashFunction;
 
@@ -147,6 +148,16 @@ public class NamespaceBundleFactory implements ZooKeeperCacheListener<LocalPolic
         return new NamespaceBundle(nsname, hashRange, this);
     }
 
+    public NamespaceBundle getBundle(String namespace, String bundleRange) {
+        checkArgument(bundleRange.contains("_"), "Invalid bundle range");
+        String[] boundaries = bundleRange.split("_");
+        Long lowerEndpoint = Long.decode(boundaries[0]);
+        Long upperEndpoint = Long.decode(boundaries[1]);
+        Range<Long> hashRange = Range.range(lowerEndpoint, BoundType.CLOSED, upperEndpoint,
+                (upperEndpoint.equals(NamespaceBundles.FULL_UPPER_BOUND)) ? BoundType.CLOSED : BoundType.OPEN);
+        return getBundle(new NamespaceName(namespace), hashRange);
+    }
+    
     public NamespaceBundle getFullBundle(NamespaceName fqnn) throws Exception {
         return bundlesCache.synchronous().get(fqnn).getFullBundle();
     }
@@ -192,6 +203,7 @@ public class NamespaceBundleFactory implements ZooKeeperCacheListener<LocalPolic
      */
     public Pair<NamespaceBundles, List<NamespaceBundle>> splitBundles(NamespaceBundle targetBundle, int numBundles)
             throws Exception {
+        checkArgument(canSplitBundle(targetBundle), "%s bundle can't be split further", targetBundle);
         checkNotNull(targetBundle, "can't split null bundle");
         checkNotNull(targetBundle.getNamespaceObject(), "namespace must be present");
         NamespaceName nsname = targetBundle.getNamespaceObject();
@@ -202,8 +214,8 @@ public class NamespaceBundleFactory implements ZooKeeperCacheListener<LocalPolic
         final long[] partitions = new long[sourceBundle.partitions.length + (numBundles - 1)];
         int pos = 0;
         int splitPartition = -1;
+        final Range<Long> range = targetBundle.getKeyRange();
         for (int i = 0; i < lastIndex; i++) {
-            final Range<Long> range = targetBundle.getKeyRange();
             if (sourceBundle.partitions[i] == range.lowerEndpoint()
                     && (range.upperEndpoint() == sourceBundle.partitions[i + 1])) {
                 splitPartition = i;
@@ -228,6 +240,11 @@ public class NamespaceBundleFactory implements ZooKeeperCacheListener<LocalPolic
             return new ImmutablePair<NamespaceBundles, List<NamespaceBundle>>(splittedNsBundles, splittedBundles);
         }
         return null;
+    }
+
+    public boolean canSplitBundle(NamespaceBundle bundle) {
+        Range<Long> range = bundle.getKeyRange();
+        return range.upperEndpoint() - range.lowerEndpoint() > 1;
     }
 
     public static void validateFullRange(SortedSet<String> partitions) {

@@ -217,6 +217,9 @@ public class Namespaces extends AdminResource {
                 } else {
                     policies.bundles = validateBundlesData(initialBundles);
                 }
+            } else {
+                int defaultNumberOfBundles = config().getDefaultNumberOfNamespaceBundles();
+                policies.bundles = getBundles(defaultNumberOfBundles);
             }
 
             zkCreateOptimistic(path(POLICIES, property, cluster, namespace),
@@ -838,7 +841,8 @@ public class Namespaces extends AdminResource {
     @ApiResponses(value = { @ApiResponse(code = 403, message = "Don't have admin permission") })
     public void splitNamespaceBundle(@PathParam("property") String property, @PathParam("cluster") String cluster,
             @PathParam("namespace") String namespace, @PathParam("bundle") String bundleRange,
-            @QueryParam("authoritative") @DefaultValue("false") boolean authoritative) {
+            @QueryParam("authoritative") @DefaultValue("false") boolean authoritative,
+            @QueryParam("unload") @DefaultValue("false") boolean unload) {
         log.info("[{}] Split namespace bundle {}/{}/{}/{}", clientAppId(), property, cluster, namespace, bundleRange);
 
         validateSuperUserAccess();
@@ -855,8 +859,12 @@ public class Namespaces extends AdminResource {
                 true);
 
         try {
-            pulsar().getNamespaceService().splitAndOwnBundle(nsBundle).get();
+            pulsar().getNamespaceService().splitAndOwnBundle(nsBundle, unload).get();
             log.info("[{}] Successfully split namespace bundle {}", clientAppId(), nsBundle.toString());
+        } catch (IllegalArgumentException e) {
+            log.error("[{}] Failed to split namespace bundle {}/{} due to {}", clientAppId(), fqnn.toString(),
+                    bundleRange, e.getMessage());
+            throw new RestException(Status.PRECONDITION_FAILED, "Split bundle failed due to invalid request");
         } catch (Exception e) {
             log.error("[{}] Failed to split namespace bundle {}/{}", clientAppId(), fqnn.toString(), bundleRange, e);
             throw new RestException(e);
@@ -1170,7 +1178,7 @@ public class Namespaces extends AdminResource {
                     (persistence.getBookkeeperEnsemble() >= persistence.getBookkeeperWriteQuorum())
                             && (persistence.getBookkeeperWriteQuorum() >= persistence.getBookkeeperAckQuorum()),
                     "Bookkeeper Ensemble (%s) >= WriteQuorum (%s) >= AckQuoru (%s)", persistence.getBookkeeperEnsemble(),
-                    persistence.getBookkeeperWriteQuorum(), persistence.getBookkeeperAckQuorum());            
+                    persistence.getBookkeeperWriteQuorum(), persistence.getBookkeeperAckQuorum());
         }catch(NullPointerException | IllegalArgumentException e) {
             throw new RestException(Status.PRECONDITION_FAILED, e.getMessage());
         }

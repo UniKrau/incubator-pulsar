@@ -42,6 +42,7 @@ import org.apache.pulsar.broker.web.RestException;
 import org.apache.pulsar.common.naming.NamespaceName;
 import org.apache.pulsar.common.stats.AllocatorStats;
 import org.apache.pulsar.common.stats.Metrics;
+import org.apache.pulsar.policies.data.loadbalancer.LoadManagerReport;
 import org.apache.pulsar.policies.data.loadbalancer.LoadReport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -151,7 +152,7 @@ public class BrokerStats extends AdminResource {
     @Path("/load-report")
     @ApiOperation(value = "Get Load for this broker", notes = "consists of destinationstats & systemResourceUsage", response = LoadReport.class)
     @ApiResponses(value = { @ApiResponse(code = 403, message = "Don't have admin permission") })
-    public LoadReport getLoadReport() throws Exception {
+    public LoadManagerReport getLoadReport() throws Exception {
         // Ensure super user access only
         validateSuperUserAccess();
         try {
@@ -167,7 +168,8 @@ public class BrokerStats extends AdminResource {
     @ApiOperation(value = "Broker availability report", notes = "This API gives the current broker availability in percent, each resource percentage usage is calculated and then"
             + "sum of all of the resource usage percent is called broker-resource-availability"
             + "<br/><br/>THIS API IS ONLY FOR USE BY TESTING FOR CONFIRMING NAMESPACE ALLOCATION ALGORITHM", response = ResourceUnit.class, responseContainer = "Map")
-    @ApiResponses(value = { @ApiResponse(code = 403, message = "Don't have admin permission") })
+    @ApiResponses(value = { @ApiResponse(code = 403, message = "Don't have admin permission"),
+            @ApiResponse(code = 409, message = "Load-manager doesn't support operation") })
     public Map<Long, Collection<ResourceUnit>> getBrokerResourceAvailability(@PathParam("property") String property,
             @PathParam("cluster") String cluster, @PathParam("namespace") String namespace) throws Exception {
         try {
@@ -176,7 +178,7 @@ public class BrokerStats extends AdminResource {
             if (lm instanceof SimpleLoadManagerImpl) {
                 return ((SimpleLoadManagerImpl) lm).getResourceAvailabilityFor(ns).asMap();
             } else {
-                return null;
+                throw new RestException(Status.CONFLICT, lm.getClass().getName() + " does not support this operation");
             }
         } catch (Exception e) {
             log.error("Unable to get Resource Availability - [{}]", e);

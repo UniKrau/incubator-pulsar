@@ -128,7 +128,7 @@ public class AdminApiTest extends MockedPulsarServiceBaseTest {
 
         // create otherbroker to test redirect on calls that need
         // namespace ownership
-        mockPulsarSetup = new MockedPulsarService(this.conf, this.pulsar, this.admin);
+        mockPulsarSetup = new MockedPulsarService(this.conf);
         mockPulsarSetup.setup();
         otherPulsar = mockPulsarSetup.getPulsar();
         otheradmin = mockPulsarSetup.getAdmin();
@@ -885,7 +885,7 @@ public class AdminApiTest extends MockedPulsarServiceBaseTest {
         assertEquals(admin.persistentTopics().getList(namespace), Lists.newArrayList(topicName));
 
         try {
-            admin.namespaces().splitNamespaceBundle(namespace, "0x00000000_0xffffffff");
+            admin.namespaces().splitNamespaceBundle(namespace, "0x00000000_0xffffffff", true);
         } catch (Exception e) {
             fail("split bundle shouldn't have thrown exception");
         }
@@ -1701,20 +1701,15 @@ public class AdminApiTest extends MockedPulsarServiceBaseTest {
     static class MockedPulsarService extends MockedPulsarServiceBaseTest {
         
         private ServiceConfiguration conf;
-        private PulsarService pulsar;
-        private PulsarAdmin admin;
         
-        public MockedPulsarService(ServiceConfiguration conf, PulsarService pulsar, PulsarAdmin admin) {
+        public MockedPulsarService(ServiceConfiguration conf) {
             super();
             this.conf = conf;
-            this.pulsar = pulsar;
-            this.admin = admin;
         }
         
         @Override
         protected void setup() throws Exception {
-            conf.setLoadBalancerEnabled(false);
-            conf.setClusterName("test");
+            super.conf.setLoadManagerClassName(conf.getLoadManagerClassName());
             super.internalSetup();
         }
 

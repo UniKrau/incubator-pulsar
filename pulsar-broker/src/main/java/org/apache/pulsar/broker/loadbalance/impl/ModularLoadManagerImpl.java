@@ -38,7 +38,6 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.SystemUtils;
 import org.apache.pulsar.broker.BrokerData;
 import org.apache.pulsar.broker.BundleData;
-import org.apache.pulsar.broker.LocalBrokerData;
 import org.apache.pulsar.broker.PulsarServerException;
 import org.apache.pulsar.broker.PulsarService;
 import org.apache.pulsar.broker.ServiceConfiguration;
@@ -47,15 +46,19 @@ import org.apache.pulsar.broker.TimeAverageMessageData;
 import org.apache.pulsar.broker.loadbalance.BrokerFilter;
 import org.apache.pulsar.broker.loadbalance.BrokerFilterException;
 import org.apache.pulsar.broker.loadbalance.BrokerHostUsage;
+import org.apache.pulsar.broker.loadbalance.BundleSplitStrategy;
 import org.apache.pulsar.broker.loadbalance.LoadData;
 import org.apache.pulsar.broker.loadbalance.LoadManager;
 import org.apache.pulsar.broker.loadbalance.LoadSheddingStrategy;
 import org.apache.pulsar.broker.loadbalance.ModularLoadManager;
 import org.apache.pulsar.broker.loadbalance.ModularLoadManagerStrategy;
 import org.apache.pulsar.broker.loadbalance.impl.LoadManagerShared.BrokerTopicLoadingPredicate;
+import org.apache.pulsar.common.naming.NamespaceBundleFactory;
+import org.apache.pulsar.common.naming.NamespaceName;
 import org.apache.pulsar.common.naming.ServiceUnitId;
 import org.apache.pulsar.common.policies.data.ResourceQuota;
 import org.apache.pulsar.common.util.ObjectMapperFactory;
+import org.apache.pulsar.policies.data.loadbalancer.LocalBrokerData;
 import org.apache.pulsar.policies.data.loadbalancer.NamespaceBundleStats;
 import org.apache.pulsar.policies.data.loadbalancer.SystemResourceUsage;
 import org.apache.pulsar.zookeeper.ZooKeeperCache.Deserializer;
@@ -64,13 +67,12 @@ import org.apache.pulsar.zookeeper.ZooKeeperChildrenCache;
 import org.apache.pulsar.zookeeper.ZooKeeperDataCache;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.KeeperException.NoNodeException;
 import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.zookeeper.KeeperException.NoNodeException;
 
 import io.netty.util.concurrent.DefaultThreadFactory;
 
@@ -119,6 +121,9 @@ public class ModularLoadManagerImpl implements ModularLoadManager, ZooKeeperCach
     // Path to the ZNode containing the LocalBrokerData json for this broker.
     private String brokerZnodePath;
 
+    // Strategy to use for splitting bundles.
+    private BundleSplitStrategy bundleSplitStrategy;
+    
     // Service configuration belonging to the pulsar service.
     private ServiceConfiguration conf;
 
@@ -236,6 +241,8 @@ public class ModularLoadManagerImpl implements ModularLoadManager, ZooKeeperCach
             brokerHostUsage = new GenericBrokerHostUsageImpl(pulsar);
         }
 
+        bundleSplitStrategy = new BundleSplitterTask(pulsar);
+        
         conf = pulsar.getConfiguration();
 
         // Initialize the default stats to assume for unseen bundles (hard-coded for now).
@@ -416,6 +423,8 @@ public class ModularLoadManagerImpl implements ModularLoadManager, ZooKeeperCach
     private void updateAll() {
         updateAllBrokerData();
         updateBundleData();
+        // broker has latest load-report: check if any bundle requires split
+        checkNamespaceBundleSplit();
     }
 
     // As the leader broker, update the broker data map in loadData by querying ZooKeeper for the broker data put there
@@ -580,8 +589,41 @@ public class ModularLoadManagerImpl implements ModularLoadManager, ZooKeeperCach
      * As the leader broker, attempt to automatically detect and split hot namespace bundles.
      */
     @Override
-    public void doNamespaceBundleSplit() {
-        // TODO?
+    public void checkNamespaceBundleSplit() {
+        
+        if (!conf.isLoadBalancerAutoBundleSplitEnabled() || pulsar.getLeaderElectionService() == null
+                || !pulsar.getLeaderElectionService().isLeader()) {
+            return;
+        }
+        final boolean unloadSplitBundles = pulsar.getConfiguration().isLoadBalancerAutoUnloadSplitBundlesEnabled();
+        synchronized (bundleSplitStrategy) {
+            final Set<String> bundlesToBeSplit = bundleSplitStrategy.findBundlesToSplit(loadData, pulsar);
+            NamespaceBundleFactory namespaceBundleFactory = pulsar.getNamespaceService().getNamespaceBundleFactory();
+            for (String bundleName : bundlesToBeSplit) {
+                try {
+                    final String namespaceName = LoadManagerShared.getNamespaceNameFromBundleName(bundleName);
+                    final String bundleRange = LoadManagerShared.getBundleRangeFromBundleName(bundleName);
+                    if (!namespaceBundleFactory
+                            .canSplitBundle(namespaceBundleFactory.getBundle(namespaceName, bundleRange))) {
+                        continue;
+                    }
+                    log.info("Load-manager splitting budnle {} and unloading {}", bundleName, unloadSplitBundles);
+                    pulsar.getAdminClient().namespaces().splitNamespaceBundle(namespaceName, bundleRange,
+                            unloadSplitBundles);
+                    // Make sure the same bundle is not selected again.
+                    loadData.getBundleData().remove(bundleName);
+                    localData.getLastStats().remove(bundleName);
+                    // Clear namespace bundle-cache
+                    this.pulsar.getNamespaceService().getNamespaceBundleFactory()
+                            .invalidateBundleCache(new NamespaceName(namespaceName));
+                    deleteBundleDataFromZookeeper(bundleName);
+                    log.info("Successfully split namespace bundle {}", bundleName);
+                } catch (Exception e) {
+                    log.error("Failed to split namespace bundle {}", bundleName, e);
+                }
+            }
+        }
+    
     }
 
     /**
@@ -716,15 +758,17 @@ public class ModularLoadManagerImpl implements ModularLoadManager, ZooKeeperCach
 
     /**
      * As any broker, retrieve the namespace bundle stats and system resource usage to update data local to this broker.
+     * @return 
      */
     @Override
-    public void updateLocalBrokerData() {
+    public LocalBrokerData updateLocalBrokerData() {
         try {
             final SystemResourceUsage systemResourceUsage = LoadManagerShared.getSystemResourceUsage(brokerHostUsage);
             localData.update(systemResourceUsage, getBundleStats());
         } catch (Exception e) {
             log.warn("Error when attempting to update local broker data: {}", e);
         }
+        return localData;
     }
 
     /**
@@ -784,6 +828,17 @@ public class ModularLoadManagerImpl implements ModularLoadManager, ZooKeeperCach
             } catch (Exception e) {
                 log.warn("Error when writing time average broker data for {} to ZooKeeper: {}", broker, e);
             }
+        }
+    }
+    
+    private void deleteBundleDataFromZookeeper(String bundle) {
+        final String zooKeeperPath = getBundleDataZooKeeperPath(bundle);
+        try {
+            if (zkClient.exists(zooKeeperPath, null) != null) {
+                zkClient.delete(zooKeeperPath, -1);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to delete bundle-data {} from zookeeper", bundle, e);
         }
     }
 }
